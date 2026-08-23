@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 3DTeethSAM: Taming SAM2 for 3D Teeth Segmentation
 
 Official PyTorch implementation of **3DTeethSAM: Taming SAM2 for 3D Teeth Segmentation** (AAAI 2026, oral).
@@ -200,3 +201,6 @@ The script reports OA, tooth‑wise mIoU, Dice, and bIoU.
 
 - Segment Anything Model 2 (SAM2) and its official implementation.
 - Teeth3DS / 3DTeethSeg’22 organizers for providing the benchmark.
+=======
+# TeethFaultSam
+>>>>>>> c652eefa008e0d5d2fee353dab358c30e7a964f1
