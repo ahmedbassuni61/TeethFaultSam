@@ -5,6 +5,7 @@ This repository contains the local clone of `3dteethsam`, a deep learning framew
 
 ## 💻 Environment & Workflow Constraints
 **CRITICAL AGENT INSTRUCTION:** 
+* **Documentation Rule:** This `Instructions.md` document is the source of truth and must be updated regularly to reflect the current project status and completed tasks.
 * **Execution Environment:** Code is primarily being executed on **Google Colab**.
 * **File Storage:** The repository and raw files reside **locally** on the user's PC.
 * **Modification Rule:** DO NOT destructively modify the local repository files. Add new scripts for training/processing and use libraries like `peft` to inject modifications at runtime. 
@@ -12,12 +13,15 @@ This repository contains the local clone of `3dteethsam`, a deep learning framew
 ## 🧬 Current Objective: Synthetic Fault Dataset & Custom Head Fine-tuning
 The goal is to extend the base 3DTeethSAM architecture to detect and segment specific dental faults. 
 
-**Phase 1: Synthetic Dataset Generation (`trimesh`)**
-Generate synthetic faults on healthy teeth ensuring the resulting geometry remains manifold (watertight) for downstream physics calculations. To maintain strict modularity, each fault type is implemented as a separated, standalone function that returns the modified mesh and a vertex-level ground-truth mask:
-*   `generate_cavity(mesh, severity)`: Selects random crown vertices, isolates a local neighborhood using KDTree, and applies a 3D Gaussian decay function to translate those vertices inward along their inverted surface normals (volume loss).
-*   `generate_crack(mesh, depth)`: Generates a highly subdivided 2D plane, applies procedural noise (e.g., Perlin) to create a jagged fracture surface, and uses a boolean difference operation (`trimesh.boolean`) to carve a structural fissure into the tooth.
-*   `generate_abrasion(mesh, wear_level)`: Simulates bruxism/enamel wear by identifying high-curvature regions (like cusps) and applying localized Laplacian smoothing or planar clipping to flatten the geometry.
-*   `generate_calculus(mesh, buildup)`: Simulates tartar buildup near the cervical margin (gumline) by applying localized *outward* displacement (volume addition) to create a brittle, secondary mesh layer.
+**Phase 1: Synthetic Dataset Generation Pipeline**
+To ensure accurate geometry, the pipeline now follows these steps (detailed documentation from `synthetic_faults_pipeline.ipynb` is available in `docs/pipeline_overview.md` and `docs/fault_generators.md`):
+1. **Manual Curation (Gold Standard Subset):** Use the `Calculus_Curation_UI.ipynb` to manually inspect and flag raw meshes as "Clean" or "Has Calculus" into a `curation_ledger.csv`. This prevents algorithmic smoothing distortion by ensuring we apply synthetic tartar only on a mathematically perfect baseline.
+2. **Segmentation Visualization:** First, visualize the healthy mesh segmentation to confirm proper identification of teeth vs. gum.
+3. **Targeted Fault Generation (`trimesh`):** The script (`scripts/generate_synthetic_dataset.py`) filters for "Clean" meshes. Currently, it is **isolated to exclusively focus on `generate_calculus`** to prevent noisy baseline issues. Faults are masked to affect *only* the teeth (where `labels > 0`). Each fault type is implemented as a standalone function:
+*   `generate_cavity(mesh, labels, jaw, severity)`: Simulates volume loss by translating crown vertices inward via a smooth Gaussian decay. Masks out the gum.
+*   `generate_crack(mesh, labels, jaw, depth)`: Simulates a jagged structural fissure using localized vertex displacement (avoiding unreliable boolean engines). Masks out the gum.
+*   `generate_abrasion(mesh, labels, jaw, wear_level)`: Simulates bruxism by identifying and planar-clipping the occlusal surfaces (highest/lowest Z depending on jaw orientation).
+*   `generate_calculus(mesh, labels, jaw, buildup)`: Simulates tartar buildup near the cervical margin (gumline) via outward displacement, strictly limited to teeth vertices.
 
 **Phase 2: Architectural Modification (LoRA & Custom Head)**
 *   **LoRA Injection:** The SAM2 Hiera-L backbone remains frozen. Use `peft` to inject LoRA matrices into the Query ($Q$) and Value ($V$) projection layers within the attention blocks of the Hiera backbone (`model/sam2/modeling/backbones/hieradet.py`), as well as the self/cross-attention layers of the mask decoder (`model/sam2/modeling/sam/transformer.py`).
@@ -42,6 +46,6 @@ The outputs of this modified pipeline are critical inputs for a real-time haptic
 
 * [x] Repository cloned locally.
 * [x] Architecture plan finalized (LoRA + separate head).
-* [ ] Draft the `trimesh` synthetic data script containing the separated fault functions (`generate_cavity`, `generate_crack`, `generate_abrasion`, `generate_calculus`).
+* [x] Draft the `trimesh` synthetic data script containing the separated fault functions (`generate_cavity`, `generate_crack`, `generate_abrasion`, `generate_calculus`).
 * [ ] Write `model/Fault_Refiner.py`.
 * [ ] Create `start_train_faults.py` for the Colab training loop.
