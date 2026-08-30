@@ -1,11 +1,11 @@
 """
 Trainer for calculus segmentation head.
 Single-stage training (no Hungarian matching needed for binary segmentation).
+Supports WandB integration, checkpoint resumption, and artificially shortened epochs.
 """
 
 import torch
 import numpy as np
-from tqdm import tqdm
 import logging
 import json
 from pathlib import Path
@@ -48,6 +48,9 @@ class CalculusTrainer:
         if self.use_scaler:
             self.scaler = torch.amp.GradScaler()
 
+        # State Variables
+        self.start_epoch = 1
+
         # Set random seed
         self.set_seed(config.seed)
 
@@ -56,6 +59,20 @@ class CalculusTrainer:
 
         # Setup logging
         self.logger = self.setup_logging()
+        
+        # WandB Setup
+        if self.config.use_wandb:
+            try:
+                import wandb
+                self.wandb = wandb
+                init_kwargs = {'project': self.config.wandb_project, 'config': self.config.__dict__}
+                if getattr(self.config, 'wandb_entity', None):
+                    init_kwargs['entity'] = self.config.wandb_entity
+                self.wandb.init(**init_kwargs)
+                self.logger.info(f"Initialized Weights & Biases for project {self.config.wandb_project}")
+            except ImportError:
+                self.logger.warning("wandb is not installed. Disabling Weights & Biases logging. Run 'pip install wandb'.")
+                self.config.use_wandb = False
 
         # Initialize dataset and model
         self.setup_data()
@@ -99,13 +116,11 @@ class CalculusTrainer:
         h5_path = Path(self.config.h5_path)
         data_dir = self.config.data_dir
 
-        # Auto-convert NPZ to HDF5 if needed
         if not h5_path.exists():
             self.logger.info(f"HDF5 file {h5_path} not found, starting conversion from NPZ files...")
             convert_calculus_to_hdf5(data_dir, str(h5_path))
             self.logger.info(f"HDF5 file created: {h5_path}")
 
-        # Auto-generate splits if needed
         train_split = Path(self.config.train_split_path)
         val_split = Path(self.config.val_split_path)
 
@@ -117,7 +132,6 @@ class CalculusTrainer:
 
         view_indices = self.config.view_indices
 
-        # Create datasets
         train_dataset = HDF5CalculusDataset(
             str(h5_path),
             transform=True,
@@ -141,34 +155,28 @@ class CalculusTrainer:
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=True if num_workers > 0 else False
+            pin_memory=True
         )
         self.val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=True if num_workers > 0 else False
+            pin_memory=True
         )
 
         self.logger.info(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
 
     def setup_model(self):
         """Initialize model, loss function, and optimizer."""
-        # Create the calculus model
         self.model = CalculusSegmentationSystem(self.config).to(self.device)
 
-        # Optionally load pre-trained tooth features
         if self.config.tooth_checkpoint and Path(self.config.tooth_checkpoint).exists():
             self.logger.info(f"Loading pre-trained tooth features from {self.config.tooth_checkpoint}")
             self.model.load_tooth_features(self.config.tooth_checkpoint)
 
-        # Loss function
         self.criterion = CalculusLoss().to(self.device)
 
-        # Collect parameter groups
         lora_params = get_lora_params(self.model.sam_model)
         fusion_params = list(self.model.feature_fusion.parameters())
         calculus_head_params = (
@@ -190,21 +198,19 @@ class CalculusTrainer:
 
         self.optimizer = torch.optim.AdamW(param_groups)
 
-        # Scheduler
         self.scheduler = LinearWarmupCosineAnnealingLR(
             self.optimizer,
             warmup_epochs=self.config.warmup_epochs,
             max_epochs=self.config.epochs
         )
 
-        # Log trainable params
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.logger.info(f"Total parameters: {total_params:,}")
         self.logger.info(f"Trainable parameters: {trainable_params:,}")
         self.logger.info(f"LoRA parameters: {sum(p.numel() for p in lora_params):,}")
 
-    def save_checkpoint(self, epoch, is_best=False):
+    def save_checkpoint(self, epoch, is_best=False, filename=None):
         """Save model checkpoint."""
         checkpoint = {
             'epoch': epoch,
@@ -215,7 +221,10 @@ class CalculusTrainer:
         if self.use_scaler:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
 
-        checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pth'
+        if filename is None:
+            filename = f'checkpoint_epoch_{epoch}.pth'
+            
+        checkpoint_path = self.checkpoint_dir / filename
         torch.save(checkpoint, checkpoint_path)
 
         if is_best:
@@ -233,19 +242,18 @@ class CalculusTrainer:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         if self.use_scaler and 'scaler_state_dict' in checkpoint:
             self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0)
-        self.logger.info(f"Loaded checkpoint from epoch {start_epoch}")
-        return start_epoch
+            
+        # Continue from the next epoch
+        self.start_epoch = checkpoint.get('epoch', 0) + 1
+        
+        # If we reached the end of the loaded training run but want to train more epochs
+        if self.start_epoch > self.config.epochs:
+            self.logger.warning(f"Resumed model already reached epoch {self.start_epoch-1}. Training will immediately finish unless you increase --epochs.")
+            
+        self.logger.info(f"Loaded checkpoint from epoch {self.start_epoch - 1}. Will resume at epoch {self.start_epoch}.")
+        return self.start_epoch
 
     def _compute_binary_metrics(self, pred_probs, gt_masks):
-        """
-        Compute binary segmentation metrics for calculus channel.
-
-        Args:
-            pred_probs: [B, 2, H, W] probabilities (after softmax)
-            gt_masks: [B, 2, H, W] one-hot ground truth
-        """
-        # Use calculus channel (channel 1)
         pred_bin = (pred_probs[:, 1:2] > 0.5).float()
         gt_bin = gt_masks[:, 1:2].float()
 
@@ -268,14 +276,19 @@ class CalculusTrainer:
         }
 
     def train_one_epoch(self, epoch):
-        """Train for one epoch."""
         self.model.train()
         total_loss = 0
         total_metrics = {'iou': 0, 'dice': 0, 'precision': 0, 'recall': 0}
         batches = 0
+        
+        steps_per_epoch = self.config.batches_per_epoch if self.config.batches_per_epoch > 0 else len(self.train_loader)
+        total_steps = min(steps_per_epoch, len(self.train_loader))
 
-        pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{self.config.epochs}')
-        for batch_idx, batch in enumerate(pbar):
+        for batch_idx, batch in enumerate(self.train_loader):
+            # Artificially shorten epoch if configured
+            if self.config.batches_per_epoch > 0 and batch_idx >= self.config.batches_per_epoch:
+                break
+                
             images = batch['image'].to(self.device)
             gt_masks = batch['calculus_mask'].to(self.device)
 
@@ -306,7 +319,6 @@ class CalculusTrainer:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
                 self.optimizer.step()
 
-            # Compute metrics
             with torch.no_grad():
                 refined_probs = torch.softmax(refined_masks, dim=1)
                 metrics = self._compute_binary_metrics(refined_probs, gt_masks)
@@ -316,15 +328,16 @@ class CalculusTrainer:
                 total_metrics[k] += metrics[k]
             batches += 1
 
-            pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'dice': f"{metrics['dice']:.4f}"
-            })
-
-            # TensorBoard logging
             if batch_idx % self.config.log_freq == 0:
-                step = (epoch - 1) * len(self.train_loader) + batch_idx
+                step = (epoch - 1) * total_steps + batch_idx
                 self.writer.add_scalar('Train/Loss', loss.item(), step)
+                
+                if self.config.use_wandb:
+                    wandb_dict = {'Train/Loss': loss.item(), 'step': step, 'epoch': epoch}
+                    for k, v in loss_dict.items():
+                        wandb_dict[f'Train/{k}'] = v
+                    self.wandb.log(wandb_dict)
+                    
                 for k, v in loss_dict.items():
                     self.writer.add_scalar(f'Train/{k}', v, step)
 
@@ -334,19 +347,25 @@ class CalculusTrainer:
         self.writer.add_scalar('Epoch/Train_Loss', avg_loss, epoch)
         self.writer.add_scalar('Epoch/Train_Dice', avg_metrics['dice'], epoch)
         self.writer.add_scalar('Epoch/Train_IoU', avg_metrics['iou'], epoch)
+        
+        if self.config.use_wandb:
+            self.wandb.log({
+                'Epoch/Train_Loss': avg_loss,
+                'Epoch/Train_Dice': avg_metrics['dice'],
+                'Epoch/Train_IoU': avg_metrics['iou'],
+                'epoch': epoch
+            })
 
         return avg_loss, avg_metrics
 
     @torch.no_grad()
     def validate(self, epoch):
-        """Run validation."""
         self.model.eval()
         total_loss = 0
         total_metrics = {'iou': 0, 'dice': 0, 'precision': 0, 'recall': 0}
         batches = 0
 
-        pbar = tqdm(self.val_loader, desc='Validation')
-        for batch in pbar:
+        for batch in self.val_loader:
             images = batch['image'].to(self.device)
             gt_masks = batch['calculus_mask'].to(self.device)
 
@@ -366,73 +385,89 @@ class CalculusTrainer:
                 total_metrics[k] += metrics[k]
             batches += 1
 
-            pbar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'dice': f"{metrics['dice']:.4f}"
-            })
-
         avg_loss = total_loss / max(1, batches)
         avg_metrics = {k: v / max(1, batches) for k, v in total_metrics.items()}
 
         self.writer.add_scalar('Val/Loss', avg_loss, epoch)
         for k, v in avg_metrics.items():
             self.writer.add_scalar(f'Val/{k}', v, epoch)
+            
+        if self.config.use_wandb:
+            wandb_dict = {'Val/Loss': avg_loss, 'epoch': epoch}
+            for k, v in avg_metrics.items():
+                wandb_dict[f'Val/{k}'] = v
+            self.wandb.log(wandb_dict)
 
         return avg_loss, avg_metrics
 
     def train(self):
-        """Main training loop with early stopping."""
         best_val_dice = 0.0
         patience = self.config.early_stopping_patience
         epochs_no_improve = 0
+        current_epoch = self.start_epoch
 
         self.logger.info("=" * 60)
         self.logger.info("Starting Calculus Segmentation Training")
-        self.logger.info(f"Epochs: {self.config.epochs}, Batch Size: {self.config.batch_size}")
+        self.logger.info(f"Epochs: {self.config.epochs} (Starting from {self.start_epoch}), Batch Size: {self.config.batch_size}")
         self.logger.info(f"LR: {self.config.learning_rate}, LoRA LR: {self.config.lora_lr}")
         self.logger.info(f"Early Stopping Patience: {patience}")
         self.logger.info("=" * 60)
 
-        for epoch in range(1, self.config.epochs + 1):
-            train_loss, train_metrics = self.train_one_epoch(epoch)
+        try:
+            for epoch in range(self.start_epoch, self.config.epochs + 1):
+                current_epoch = epoch
+                train_loss, train_metrics = self.train_one_epoch(epoch)
 
-            # Validate at interval
-            if epoch % self.config.val_interval == 0 or epoch == self.config.epochs:
-                val_loss, val_metrics = self.validate(epoch)
+                # Validate at interval
+                if epoch % self.config.val_interval == 0 or epoch == self.config.epochs:
+                    val_loss, val_metrics = self.validate(epoch)
 
-                self.logger.info(
-                    f"Epoch {epoch} | "
-                    f"Train Loss: {train_loss:.4f} | "
-                    f"Val Loss: {val_loss:.4f} | "
-                    f"Val Dice: {val_metrics['dice']:.4f} | "
-                    f"Val IoU: {val_metrics['iou']:.4f}"
-                )
+                    # Explicit logging to console for easy viewing per epoch
+                    self.logger.info(
+                        f"Epoch {epoch} | "
+                        f"Train Loss: {train_loss:.4f} | "
+                        f"Val Loss: {val_loss:.4f} | "
+                        f"Val Dice: {val_metrics['dice']:.4f} | "
+                        f"Val IoU: {val_metrics['iou']:.4f}"
+                    )
 
-                # Early stopping on validation Dice
-                if val_metrics['dice'] > best_val_dice:
-                    best_val_dice = val_metrics['dice']
-                    self.save_checkpoint(epoch, is_best=True)
-                    epochs_no_improve = 0
-                    self.logger.info(f"New best validation Dice: {best_val_dice:.4f}")
+                    # Early stopping on validation Dice
+                    if val_metrics['dice'] > best_val_dice:
+                        best_val_dice = val_metrics['dice']
+                        self.save_checkpoint(epoch, is_best=True)
+                        epochs_no_improve = 0
+                        self.logger.info(f"New best validation Dice: {best_val_dice:.4f}")
+                    else:
+                        epochs_no_improve += 1
+
+                    if epochs_no_improve >= patience:
+                        self.logger.info(f"Early stopping triggered after {epoch} epochs (no improvement for {patience} validations)")
+                        break
                 else:
-                    epochs_no_improve += 1
+                    # Log just the training metrics to terminal if skipping validation this epoch
+                    self.logger.info(
+                        f"Epoch {epoch} | "
+                        f"Train Loss: {train_loss:.4f} | "
+                        f"Train Dice: {train_metrics['dice']:.4f}"
+                    )
 
-                if epochs_no_improve >= patience:
-                    self.logger.info(f"Early stopping triggered after {epoch} epochs (no improvement for {patience} validations)")
-                    break
+                # Periodic save
+                if epoch % self.config.save_freq == 0:
+                    self.save_checkpoint(epoch)
 
-            # Periodic save
-            if epoch % self.config.save_freq == 0:
-                self.save_checkpoint(epoch)
-
-            self.scheduler.step()
+                self.scheduler.step()
+                
+        except KeyboardInterrupt:
+            self.logger.info("\nTraining interrupted! Catching KeyboardInterrupt...")
+            self.logger.info(f"Saving current state at Epoch {current_epoch} to allow resuming...")
+            self.save_checkpoint(current_epoch, is_best=False, filename="interrupted_checkpoint.pth")
+            self.logger.info(f"State saved. You can resume using: --resume {self.checkpoint_dir}/interrupted_checkpoint.pth")
 
         self.writer.close()
         self.logger.info(f"Training complete. Best Val Dice: {best_val_dice:.4f}")
 
     @torch.no_grad()
     def test(self, checkpoint_path):
-        """Run testing with a specific checkpoint."""
         self.load_checkpoint(checkpoint_path)
         self.model.eval()
 
@@ -440,8 +475,7 @@ class CalculusTrainer:
         total_metrics = {'iou': 0, 'dice': 0, 'precision': 0, 'recall': 0}
         batches = 0
 
-        pbar = tqdm(self.val_loader, desc='Testing')
-        for batch in pbar:
+        for batch in self.val_loader:
             images = batch['image'].to(self.device)
             gt_masks = batch['calculus_mask'].to(self.device)
 

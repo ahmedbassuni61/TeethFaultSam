@@ -180,9 +180,8 @@ class CalculusInferencePipeline:
     def predict_single(self, obj_path, json_path=None, output_dir=None):
         print(f"Processing {obj_path}...")
         verts, faces, _ = load_obj(obj_path)
-        faces = faces.verts_idx
-        verts = verts.to(self.device)
-        faces = faces.to(self.device)
+        faces = faces.verts_idx.long().to(self.device)
+        verts = verts.float().to(self.device)
         center = verts.mean(dim=0)
         verts = verts - center
         
@@ -204,7 +203,7 @@ class CalculusInferencePipeline:
             cameras_list.append(cameras)
             
         images_np = np.stack(all_images, axis=0) # [N, H, W, 3]
-        images_tensor = torch.from_numpy(images_np).permute(0, 3, 1, 2).to(self.device) # [N, 3, H, W]
+        images_tensor = torch.from_numpy(images_np).permute(0, 3, 1, 2).float().to(self.device) # [N, 3, H, W]
         
         with torch.no_grad():
             if self.config.use_amp:

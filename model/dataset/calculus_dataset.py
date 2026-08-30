@@ -78,9 +78,13 @@ class HDF5CalculusDataset(Dataset):
         else:
             self.view_indices = None
 
-        # Open HDF5 file
-        self.h5_file = h5py.File(hdf5_file, 'r')
-        all_samples = json.loads(self.h5_file['sample_index'][()])
+        self.hdf5_path = hdf5_file
+        self.h5_file = None
+
+        # Open HDF5 file temporarily to read the index and keys
+        with h5py.File(hdf5_file, 'r') as f:
+            all_samples = json.loads(f['sample_index'][()])
+            self.available_fields = list(f.keys())
         
         # Filter samples based on split file
         if split_file_path:
@@ -103,7 +107,6 @@ class HDF5CalculusDataset(Dataset):
             self.samples = view_filtered_samples
         
         # Check required fields
-        self.available_fields = list(self.h5_file.keys())
         required_fields = ['images', 'calculus_masks']
         missing_fields = [field for field in required_fields if field not in self.available_fields]
         if missing_fields:
@@ -119,6 +122,9 @@ class HDF5CalculusDataset(Dataset):
         return len(self.samples)
     
     def __getitem__(self, idx):
+        if self.h5_file is None:
+            self.h5_file = h5py.File(self.hdf5_path, 'r')
+            
         sample = self.samples[idx]
         sample_id = sample['id']
         
@@ -145,5 +151,5 @@ class HDF5CalculusDataset(Dataset):
         return result
     
     def __del__(self):
-        if hasattr(self, 'h5_file'):
+        if getattr(self, 'h5_file', None) is not None:
             self.h5_file.close()

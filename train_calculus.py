@@ -3,8 +3,8 @@ Training entrypoint for calculus segmentation head.
 
 Usage:
     python train_calculus.py
-    python train_calculus.py --tooth_checkpoint ckpts/best.pth
-    python train_calculus.py --mode train_test --epochs 80 --batch_size 4
+    python train_calculus.py --tooth_checkpoint ckpts/best.pth --use_wandb
+    python train_calculus.py --batches_per_epoch 50 --use_wandb
 """
 
 import os
@@ -34,6 +34,13 @@ def main():
     parser.add_argument('--learning_rate', type=float, default=None, help='Learning rate')
     parser.add_argument('--epochs', type=int, default=None, help='Number of epochs')
     parser.add_argument('--data_dir', type=str, default=None, help='Preprocessed data directory')
+    
+    # QoL and Logging features
+    parser.add_argument('--use_wandb', action='store_true', help='Enable Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default=None, help='Wandb project name')
+    parser.add_argument('--wandb_entity', type=str, default=None, help='Wandb entity (username or team)')
+    parser.add_argument('--batches_per_epoch', type=int, default=None, 
+                        help='Artificially shorten epochs to N batches to see loss faster')
 
     args = parser.parse_args()
 
@@ -60,6 +67,15 @@ def main():
     if args.data_dir is not None:
         config.data_dir = args.data_dir
         config.h5_path = os.path.join(args.data_dir, 'h5', 'calculus_dataset.h5')
+    
+    if args.use_wandb:
+        config.use_wandb = True
+    if args.wandb_project is not None:
+        config.wandb_project = args.wandb_project
+    if args.wandb_entity is not None:
+        config.wandb_entity = args.wandb_entity
+    if args.batches_per_epoch is not None:
+        config.batches_per_epoch = args.batches_per_epoch
 
     print("=" * 60)
     print("Calculus Segmentation Training")
@@ -69,6 +85,9 @@ def main():
     print(f"Learning rate: {config.learning_rate}")
     print(f"LoRA rank: {config.lora_rank}, lr: {config.lora_lr}")
     print(f"Epochs: {config.epochs}")
+    if config.batches_per_epoch > 0:
+        print(f"Batches per epoch: {config.batches_per_epoch} (Shortened)")
+    print(f"WandB Logging: {config.use_wandb}")
     print(f"Data dir: {config.data_dir}")
     print(f"Tooth checkpoint: {config.tooth_checkpoint}")
     print("=" * 60)
