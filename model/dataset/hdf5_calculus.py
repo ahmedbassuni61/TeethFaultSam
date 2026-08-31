@@ -77,7 +77,7 @@ def convert_calculus_to_hdf5(npz_dir, h5_path, compression="gzip", views=7):
     print(f"Conversion complete! Data saved to {h5_path}")
     return h5_path
 
-def generate_calculus_splits(npz_dir, split_dir, train_ratio=0.7, seed=42):
+def generate_calculus_splits(npz_dir, split_dir, train_ratio=0.7, seed=42, h5_path=None):
     """
     Generates training and testing split files for the calculus dataset.
     
@@ -86,6 +86,7 @@ def generate_calculus_splits(npz_dir, split_dir, train_ratio=0.7, seed=42):
         split_dir: The directory to save the split files.
         train_ratio: Ratio of cases to use for training.
         seed: Random seed for reproducibility.
+        h5_path: Fallback HDF5 file to read case names from when no .npz files exist.
     """
     npz_dir = Path(npz_dir)
     split_dir = Path(split_dir)
@@ -94,7 +95,19 @@ def generate_calculus_splits(npz_dir, split_dir, train_ratio=0.7, seed=42):
     random.seed(seed)
     
     npz_files = list(npz_dir.glob("*.npz"))
-    case_names = [f.stem for f in npz_files]
+    if len(npz_files) > 0:
+        case_names = list(set(f.stem for f in npz_files))
+    elif h5_path and Path(h5_path).exists():
+        print(f"No .npz files in {npz_dir}. Reading case names from {h5_path}...")
+        with h5py.File(h5_path, 'r') as f:
+            if 'sample_index' in f:
+                samples = json.loads(f['sample_index'][()])
+                case_names = list(set(s['case_name'] for s in samples))
+            else:
+                case_names = []
+    else:
+        print(f"Warning: No .npz files in {npz_dir} and no valid h5_path. Splits will be empty.")
+        case_names = []
     
     # Sort to ensure deterministic behavior before shuffling
     case_names.sort()

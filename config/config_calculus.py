@@ -45,6 +45,12 @@ class CalculusConfig:
     wandb_project: str = '3DTeethSAM_Calculus'
     wandb_entity: Optional[str] = None
 
+    # HuggingFace Hub
+    hf_repo_id: Optional[str] = None            # e.g. "ahmedbassuni61/teethsam"
+    hf_upload_every_n_epochs: int = 5            # Upload checkpoint every N epochs
+    hf_token: Optional[str] = None               # HF token (or use env var / huggingface-cli login)
+    hf_path_in_repo: str = 'Calculus_Training_Logs'  # Target folder in HF repo
+
     # Mixed precision
     use_amp: bool = True
     amp_dtype: str = 'float16'

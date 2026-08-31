@@ -4,7 +4,7 @@ Training entrypoint for calculus segmentation head.
 Usage:
     python train_calculus.py
     python train_calculus.py --tooth_checkpoint ckpts/best.pth --use_wandb
-    python train_calculus.py --batches_per_epoch 50 --use_wandb
+    python train_calculus.py --batches_per_epoch 50 --hf_repo_id ahmedbassuni61/teethsam
 """
 
 import os
@@ -42,6 +42,14 @@ def main():
     parser.add_argument('--batches_per_epoch', type=int, default=None, 
                         help='Artificially shorten epochs to N batches to see loss faster')
 
+    # HuggingFace Hub
+    parser.add_argument('--hf_repo_id', type=str, default=None,
+                        help='HuggingFace repo to upload checkpoints to (e.g. ahmedbassuni61/teethsam)')
+    parser.add_argument('--hf_upload_every', type=int, default=None,
+                        help='Upload checkpoint to HuggingFace every N epochs (default: 5)')
+    parser.add_argument('--hf_token', type=str, default=None,
+                        help='HuggingFace access token (or use env var / huggingface-cli login)')
+
     args = parser.parse_args()
 
     # Load default config
@@ -77,6 +85,14 @@ def main():
     if args.batches_per_epoch is not None:
         config.batches_per_epoch = args.batches_per_epoch
 
+    # HuggingFace overrides
+    if args.hf_repo_id is not None:
+        config.hf_repo_id = args.hf_repo_id
+    if args.hf_upload_every is not None:
+        config.hf_upload_every_n_epochs = args.hf_upload_every
+    if args.hf_token is not None:
+        config.hf_token = args.hf_token
+
     print("=" * 60)
     print("Calculus Segmentation Training")
     print("=" * 60)
@@ -90,6 +106,9 @@ def main():
     print(f"WandB Logging: {config.use_wandb}")
     print(f"Data dir: {config.data_dir}")
     print(f"Tooth checkpoint: {config.tooth_checkpoint}")
+    if config.hf_repo_id:
+        print(f"HuggingFace repo: {config.hf_repo_id}")
+        print(f"HF upload every: {config.hf_upload_every_n_epochs} epochs")
     print("=" * 60)
 
     # Create trainer
@@ -110,14 +129,14 @@ def main():
     if args.mode in ['test', 'train_test']:
         checkpoint_to_test = args.checkpoint
         if args.mode == 'train_test' and not checkpoint_to_test:
-            best_ckpt = trainer.checkpoint_dir / 'best_calculus_model.pth'
+            best_ckpt = trainer.checkpoint_dir / 'best_calculus_model.ckpt'
             if best_ckpt.exists():
                 checkpoint_to_test = str(best_ckpt)
                 print(f"Using best model for testing: {checkpoint_to_test}")
 
         if checkpoint_to_test:
             print(f"Testing with checkpoint: {checkpoint_to_test}")
-            test_loss, test_metrics = trainer.test(checkpoint_to_test)
+            trainer.test(checkpoint_to_test)
         else:
             print("No checkpoint found for testing.")
 
