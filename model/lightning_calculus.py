@@ -8,9 +8,12 @@ Contains:
 """
 
 import os
+import logging
 import torch
 import torch.nn.functional as F
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 try:
     from lightning.pytorch import LightningModule, LightningDataModule
@@ -51,7 +54,7 @@ class CalculusLightningModule(LightningModule):
         # Load pre-trained tooth features if checkpoint exists
         if config.tooth_checkpoint and Path(config.tooth_checkpoint).exists():
             self.model.load_tooth_features(config.tooth_checkpoint)
-            print(f"✅ Loaded pre-trained tooth features from {config.tooth_checkpoint}")
+            log.info("Loaded pre-trained tooth features from %s", config.tooth_checkpoint)
 
         # Loss function
         self.criterion = CalculusLoss()
@@ -128,9 +131,10 @@ class CalculusLightningModule(LightningModule):
         lr = self.trainer.optimizers[0].param_groups[0]['lr']
         parts.append(f"LR: {lr:.2e}")
 
-        print(f"\n{'─' * 70}")
-        print(" │ ".join(parts))
-        print(f"{'─' * 70}")
+        summary = " | ".join(parts)
+        log.info("-" * 70)
+        log.info(summary)
+        log.info("-" * 70)
 
     # ── Test ─────────────────────────────────────────────────────────────────
 
@@ -154,15 +158,15 @@ class CalculusLightningModule(LightningModule):
 
     def on_test_epoch_end(self):
         metrics = self.trainer.callback_metrics
-        print(f"\n{'=' * 50}")
-        print(f"🧪  Test Results")
-        print(f"{'=' * 50}")
+        log.info("=" * 50)
+        log.info("Test Results")
+        log.info("=" * 50)
         for key in ['test/loss', 'test/dice', 'test/iou', 'test/precision', 'test/recall']:
             val = metrics.get(key)
             if val is not None:
                 val = val.item() if hasattr(val, 'item') else val
-                print(f"  {key.split('/')[-1].capitalize():>12}: {val:.4f}")
-        print(f"{'=' * 50}\n")
+                log.info("  %12s: %.4f", key.split('/')[-1].capitalize(), val)
+        log.info("=" * 50)
 
     # ── Optimizer & Scheduler ────────────────────────────────────────────────
 
@@ -219,34 +223,34 @@ class CalculusLightningModule(LightningModule):
         frozen = total - trainable
 
         c = self.config
-        print(f"\n{'=' * 60}")
-        print(f"🏗️   Model Architecture")
-        print(f"{'=' * 60}")
-        print(f"  Total parameters:     {total:>12,}")
-        print(f"  Trainable parameters: {trainable:>12,}")
-        print(f"  LoRA parameters:      {lora:>12,}")
-        print(f"  Frozen parameters:    {frozen:>12,}")
-        print(f"{'─' * 60}")
-        print(f"🚀  Training Configuration")
-        print(f"{'─' * 60}")
-        print(f"  Epochs:            {c.epochs}")
-        print(f"  Batch size:        {c.batch_size}")
-        print(f"  Learning rate:     {c.learning_rate}")
-        print(f"  LoRA LR:           {c.lora_lr}")
-        print(f"  Weight decay:      {c.weight_decay}")
-        print(f"  Warmup epochs:     {c.warmup_epochs}")
-        print(f"  Gradient clip:     {c.grad_clip}")
-        print(f"  AMP dtype:         {c.amp_dtype}")
-        print(f"  Early stop after:  {c.early_stopping_patience} val epochs w/o improvement")
+        log.info("=" * 60)
+        log.info("Model Architecture")
+        log.info("=" * 60)
+        log.info("  Total parameters:     %12s", f"{total:,}")
+        log.info("  Trainable parameters: %12s", f"{trainable:,}")
+        log.info("  LoRA parameters:      %12s", f"{lora:,}")
+        log.info("  Frozen parameters:    %12s", f"{frozen:,}")
+        log.info("-" * 60)
+        log.info("Training Configuration")
+        log.info("-" * 60)
+        log.info("  Epochs:            %s", c.epochs)
+        log.info("  Batch size:        %s", c.batch_size)
+        log.info("  Learning rate:     %s", c.learning_rate)
+        log.info("  LoRA LR:           %s", c.lora_lr)
+        log.info("  Weight decay:      %s", c.weight_decay)
+        log.info("  Warmup epochs:     %s", c.warmup_epochs)
+        log.info("  Gradient clip:     %s", c.grad_clip)
+        log.info("  AMP dtype:         %s", c.amp_dtype)
+        log.info("  Early stop after:  %s val epochs w/o improvement", c.early_stopping_patience)
         if c.batches_per_epoch > 0:
-            print(f"  Batches/epoch:     {c.batches_per_epoch}  (shortened)")
+            log.info("  Batches/epoch:     %s  (shortened)", c.batches_per_epoch)
         if c.hf_repo_id:
-            print(f"{'─' * 60}")
-            print(f"☁️   HuggingFace Hub")
-            print(f"{'─' * 60}")
-            print(f"  Repo:              {c.hf_repo_id}")
-            print(f"  Upload every:      {c.hf_upload_every_n_epochs} epochs")
-        print(f"{'=' * 60}\n")
+            log.info("-" * 60)
+            log.info("HuggingFace Hub")
+            log.info("-" * 60)
+            log.info("  Repo:              %s", c.hf_repo_id)
+            log.info("  Upload every:      %s epochs", c.hf_upload_every_n_epochs)
+        log.info("=" * 60)
 
     # ── Metrics ──────────────────────────────────────────────────────────────
 
@@ -289,20 +293,20 @@ class CalculusDataModule(LightningDataModule):
         self.config = config
 
     def prepare_data(self):
-        """Convert NPZ → H5 and generate splits if needed. Runs once on rank 0."""
+        """Convert NPZ -> H5 and generate splits if needed. Runs once on rank 0."""
         h5_path = Path(self.config.h5_path)
         data_dir = self.config.data_dir
 
         if not h5_path.exists():
-            print(f"HDF5 file {h5_path} not found — converting from NPZ files …")
+            log.info("HDF5 file %s not found -- converting from NPZ files ...", h5_path)
             convert_calculus_to_hdf5(data_dir, str(h5_path))
-            print(f"HDF5 created: {h5_path}")
+            log.info("HDF5 created: %s", h5_path)
 
         train_split = Path(self.config.train_split_path)
         val_split = Path(self.config.val_split_path)
 
         if not train_split.exists() or not val_split.exists():
-            print("Split files not found — generating …")
+            log.info("Split files not found -- generating ...")
             split_dir = train_split.parent
             generate_calculus_splits(data_dir, str(split_dir), h5_path=str(h5_path))
 
@@ -322,7 +326,7 @@ class CalculusDataModule(LightningDataModule):
                 split_file_path=str(self.config.val_split_path),
                 view_indices=views,
             )
-            print(f"📂 Train samples: {len(self.train_dataset)}, Val samples: {len(self.val_dataset)}")
+            log.info("Train samples: %d, Val samples: %d", len(self.train_dataset), len(self.val_dataset))
 
         if stage in ('test', None):
             self.test_dataset = HDF5CalculusDataset(
@@ -404,32 +408,32 @@ class HuggingFaceUploadCallback(Callback):
             trainer.save_checkpoint(ckpt_path)
 
             epoch = trainer.current_epoch + 1
-            print(f"\n📤 [{tag}] Uploading resume checkpoint (epoch {epoch}) to HuggingFace …")
+            log.info("[%s] Uploading resume checkpoint (epoch %d) to HuggingFace ...", tag, epoch)
             self.api.upload_file(
                 path_or_fileobj=ckpt_path,
                 path_in_repo='resume_checkpoint.ckpt',
                 repo_id=self.repo_id,
                 repo_type='model',
             )
-            print(f"✅ Upload complete → https://huggingface.co/{self.repo_id}")
+            log.info("Upload complete -> https://huggingface.co/%s", self.repo_id)
         except Exception as e:
-            print(f"⚠️  HuggingFace upload failed ({tag}): {e}")
+            log.warning("HuggingFace upload failed (%s): %s", tag, e)
 
     def _upload_best_model(self, trainer):
         """Upload the best validation model if available."""
         try:
             best_path = trainer.checkpoint_callback.best_model_path
             if best_path and os.path.exists(best_path):
-                print(f"📤 Uploading best model to HuggingFace …")
+                log.info("Uploading best model to HuggingFace ...")
                 self.api.upload_file(
                     path_or_fileobj=best_path,
                     path_in_repo='best_calculus_model.ckpt',
                     repo_id=self.repo_id,
                     repo_type='model',
                 )
-                print(f"✅ Best model uploaded → https://huggingface.co/{self.repo_id}")
+                log.info("Best model uploaded -> https://huggingface.co/%s", self.repo_id)
         except Exception as e:
-            print(f"⚠️  Best-model upload failed: {e}")
+            log.warning("Best-model upload failed: %s", e)
 
     # ── Hooks ────────────────────────────────────────────────────────────────
 
